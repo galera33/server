@@ -30,18 +30,23 @@ class CadastroModel(BaseModel):
     nome: str
     email: str
     celular: str
-    data_cadastro: Optional[str] = None
+    data_nascimento: str
+    id_tablet: str
+    atividade: str
+    # data_cadastro e status são gerados automaticamente no servidor
 
 class CPFRequest(BaseModel):
     cpf: str
 
 class AtividadeRequest(BaseModel):
-    atividade: str
     cpf: str
+    atividade: str
+    id_tablet: str
 
 class QRCodeModel(BaseModel):
-    qr_data: str
-
+    qr: str
+    atividade: str
+    id_tablet: str
 
 # ================== FUNÇÕES AUXILIARES ==================
 def carregar_registros():
@@ -120,77 +125,127 @@ def verificar_cpf(cpf: str, arquivo) -> dict:
     dados = carregar_dados(arquivo)
     for usuario in dados:
         if usuario.get('cpf') == cpf_formatado:
-            return {"status": "success", "message": "CPF encontrado na base de dados"}
-    return {"status": "error", "message": "CPF não encontrado na base de dados"}
+            return {"status": "success", "message": "CPF encontrado na base de dados", "usuario": usuario}
+    return {"status": "error", "message": "CPF não encontrado na base de datos"}
 
-def verificar_atividade(cpf: str, atividade, arquivo) -> dict:
-    cpf_formatado = formatar_cpf(cpf)
-    if not re.match(r'^\d{11}$', cpf_formatado):
-        return {"status": "error", "message": "CPF inválido - deve conter 11 dígitos"}
-    dados = carregar_dados(arquivo)
-    for usuario in dados:
-        if usuario.get('cpf') == cpf_formatado and usuario.get('atividade') == atividade:
-            return {"status": "success", "usuario": usuario}
-    return {"status": "error", "message": "Atividade não encontrada para este CPF"}
-
-def registrar_atividade(cpf: str, atividade: str) -> dict:
+def registrar_atividade(cpf: str, atividade: str, id_tablet: str) -> dict:
     cpf_formatado = formatar_cpf(cpf)
     if not re.match(r'^\d{11}$', cpf_formatado):
         return {"status": "error", "message": "CPF inválido - deve conter 11 dígitos"}
     if not atividade.strip():
         return {"status": "error", "message": "Atividade não pode estar vazia"}
+    if not id_tablet.strip():
+        return {"status": "error", "message": "ID do tablet não pode estar vazio"}
 
     resultado_verificacao = verificar_cpf(cpf_formatado, ARQUIVO_JSON)
     if resultado_verificacao["status"] == "success":
-        resultado_atividade = verificar_atividade(cpf_formatado, atividade.strip(), REGISTRO_JSON)
-        if resultado_atividade["status"] == "error":
-            novo_registro = {
-                "cpf": cpf_formatado,
-                "atividade": atividade.strip(),
-                "data_hora": datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-            }
-            salvar_registro(novo_registro)
-            return {"status": "success", "message": "Atividade registrada com sucesso"}
-        return {"status": "error", "message": "Atividade já registrada"}
+        # Verificar se já existe registro para esta atividade e CPF hoje
+        registros = carregar_registros()
+        data_hoje = datetime.datetime.now(UTC).strftime("%Y-%m-%d")
+        
+        for registro in registros:
+            if (registro.get('cpf') == cpf_formatado and 
+                registro.get('atividade') == atividade.strip() and
+                registro.get('data_hora', '').startswith(data_hoje)):
+                return {"status": "error", "message": "Atividade já registrada hoje"}
+
+        # Registrar nova atividade
+        novo_registro = {
+            "cpf": cpf_formatado,
+            "atividade": atividade.strip(),
+            "id_tablet": id_tablet.strip(),
+            "data_hora": datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        }
+        salvar_registro(novo_registro)
+        return {"status": "success", "message": "Atividade registrada com sucesso"}
+    
     return {"status": "error", "message": "CPF não consta na base de dados"}
 
+def registrar_atividade_qr(cpf: str, atividade: str, id_tablet: str) -> dict:
+    cpf_formatado = formatar_cpf(cpf)
+    if not re.match(r'^\d{11}$', cpf_formatado):
+        return {"status": "error", "message": "CPF inválido - deve conter 11 dígitos"}
+    if not atividade.strip():
+        return {"status": "error", "message": "Atividade não pode estar vazia"}
+    if not id_tablet.strip():
+        return {"status": "error", "message": "ID do tablet não pode estar vazio"}
 
-# ================== ROTAS API PURA ==================
+        # Verificar se já existe registro para esta atividade e CPF hoje
+    registros = carregar_registros()
+    data_hoje = datetime.datetime.now(UTC).strftime("%Y-%m-%d")
+        
+    for registro in registros:
+        if (registro.get('cpf') == cpf_formatado and 
+            registro.get('atividade') == atividade.strip() and
+            registro.get('data_hora', '').startswith(data_hoje)):
+            return {"status": "error", "message": "Atividade já registrada hoje"}
+
+        # Registrar nova atividade
+    novo_registro = {
+        "cpf": cpf_formatado,
+        "atividade": atividade.strip(),
+        "id_tablet": id_tablet.strip(),
+        "data_hora": datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    }
+    salvar_registro(novo_registro)
+    return {"status": "success", "message": "Atividade registrada com sucesso"}
+    
+    return {"status": "error", "message": "CPF não consta na base de dados"}
+# ================== ROTAS API ==================
 @app.post("/cadastrar")
 async def cadastrar(usuario: CadastroModel):
     if not re.match(r'^\d{11}$', usuario.cpf):
         return JSONResponse(status_code=400, content={"error": "CPF inválido"})
 
+    # Validar formato da data de nascimento (DD/MM/AAAA)
+    if not re.match(r'^\d{2}/\d{2}/\d{4}$', usuario.data_nascimento):
+        return JSONResponse(status_code=400, content={"error": "Data de nascimento inválida. Use o formato DD/MM/AAAA"})
+
     dados = carregar_dados(ARQUIVO_JSON)
+    
+    # Verificar se CPF já existe
     if any(u['cpf'] == usuario.cpf for u in dados):
         return JSONResponse(status_code=400, content={"error": "CPF já cadastrado"})
 
-    if usuario.data_cadastro is None:
-        usuario.data_cadastro = datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-
-    dados.append(usuario.dict())
+    # Converter para dict e adicionar campos gerados no servidor
+    usuario_dict = usuario.dict()
+    usuario_dict["data_cadastro"] = datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    usuario_dict["status"] = "local"  # Adicionando status local
+    
+    dados.append(usuario_dict)
     salvar_dados(dados, ARQUIVO_JSON)
-    return {"status": "success", "message": "Cadastro realizado com sucesso"}
+    
+    return {
+        "status": "success", 
+        "message": "Cadastro realizado com sucesso",
+        "dados_cadastrados": usuario_dict
+    }
 
 @app.post("/verificar-cpf")
 async def verificar_cpf_endpoint(cpf_request: CPFRequest):
     return verificar_cpf(cpf_request.cpf, ARQUIVO_JSON)
 
-@app.post("/registrar_atividade")
+@app.post("/registrar-atividade")
 async def registrar_atividade_endpoint(atividade_request: AtividadeRequest):
-    return registrar_atividade(atividade_request.cpf, atividade_request.atividade)
+    return registrar_atividade(
+        atividade_request.cpf, 
+        atividade_request.atividade,
+        atividade_request.id_tablet
+    )
 
 @app.post("/process-qrcode")
 async def process_qrcode(qr_data: QRCodeModel):
+    qr_cpf = qr_data.qr
+    atividade = qr_data.atividade
+    id_tablet = qr_data.id_tablet
     try:
-        cpf = decrypt_cpf(qr_data.qr_data)
+        cpf = decrypt_cpf(qr_cpf)
         if not re.match(r'^\d{11}$', cpf):
             return {"status": "error", "message": "CPF inválido no QR Code"}
-        atividade = "skyline"
-        return registrar_atividade(cpf, atividade)
+        # Para QR Code, usamos um ID de tablet genérico
+        return registrar_atividade_qr(cpf, atividade, id_tablet)
     except Exception as e:
         return {"status": "error", "message": f"Falha ao processar QRCode: {str(e)}"}
-
 
 # ================== MAIN ==================
 if __name__ == "__main__":
