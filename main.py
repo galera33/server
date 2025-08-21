@@ -8,7 +8,7 @@ from cryptography.hazmat.backends import default_backend
 import base64
 import os
 import datetime
-from datetime import UTC
+from datetime import timezone, timedelta
 import json
 import re
 from pathlib import Path
@@ -30,23 +30,35 @@ class CadastroModel(BaseModel):
     nome: str
     email: str
     celular: str
-    data_nascimento: str
-    id_tablet: str
-    atividade: str
-    # data_cadastro e status são gerados automaticamente no servidor
+    data_cadastro: Optional[str] = None
 
 class CPFRequest(BaseModel):
     cpf: str
 
 class AtividadeRequest(BaseModel):
-    cpf: str
     atividade: str
-    id_tablet: str
+    cpf: str
 
 class QRCodeModel(BaseModel):
-    qr: str
-    atividade: str
-    id_tablet: str
+    qr_data: str
+
+# ================== NOVOS MODELOS ==================
+class RegisterModel(BaseModel):
+    name: str
+    cpf: str
+    email: str
+    phone: str
+    date_birthday: str
+    source: str
+    tablet_name: Optional[str]
+    client_created_at: Optional[str]
+
+class QRCodeRequestModel(BaseModel):
+    cpf: str
+    method: str
+    stand_name: str
+    tablet_name: Optional[str]
+    client_attempt_at: Optional[str]
 
 # ================== FUNÇÕES AUXILIARES ==================
 def carregar_registros():
@@ -125,125 +137,117 @@ def verificar_cpf(cpf: str, arquivo) -> dict:
     dados = carregar_dados(arquivo)
     for usuario in dados:
         if usuario.get('cpf') == cpf_formatado:
-            return {"status": "success", "message": "CPF encontrado na base de dados", "usuario": usuario}
-    return {"status": "error", "message": "CPF não encontrado na base de datos"}
+            return {"status": "success", "message": "CPF encontrado na base de dados"}
+    return {"status": "error", "message": "CPF não encontrado na base de dados"}
 
-def registrar_atividade(cpf: str, atividade: str, id_tablet: str) -> dict:
+def verificar_atividade(cpf: str, atividade, arquivo) -> dict:
     cpf_formatado = formatar_cpf(cpf)
     if not re.match(r'^\d{11}$', cpf_formatado):
         return {"status": "error", "message": "CPF inválido - deve conter 11 dígitos"}
-    if not atividade.strip():
-        return {"status": "error", "message": "Atividade não pode estar vazia"}
-    if not id_tablet.strip():
-        return {"status": "error", "message": "ID do tablet não pode estar vazio"}
+    dados = carregar_dados(arquivo)
+    for usuario in dados:
+        if usuario.get('cpf') == cpf_formatado and usuario.get('atividade') == atividade:
+            return {"status": "success", "usuario": usuario}
+    return {"status": "error", "message": "Atividade não encontrada para este CPF"}
 
-    resultado_verificacao = verificar_cpf(cpf_formatado, ARQUIVO_JSON)
-    if resultado_verificacao["status"] == "success":
-        # Verificar se já existe registro para esta atividade e CPF hoje
-        registros = carregar_registros()
-        data_hoje = datetime.datetime.now(UTC).strftime("%Y-%m-%d")
-        
-        for registro in registros:
-            if (registro.get('cpf') == cpf_formatado and 
-                registro.get('atividade') == atividade.strip() and
-                registro.get('data_hora', '').startswith(data_hoje)):
-                return {"status": "error", "message": "Atividade já registrada hoje"}
+def registrar_atividade(cpf: str, atividade: str, extra_info: dict = None) -> dict:
+    cpf_formatado = formatar_cpf(cpf)
+    if not re.match(r'^\d{11}$', cpf_formatado):
+        return {"status": "error", "message": "CPF inválido - deve conter 11 dígitos"}
 
-        # Registrar nova atividade
-        novo_registro = {
+    dados_registro = carregar_dados(REGISTRO_JSON)
+    for registro in dados_registro:
+        if registro.get("cpf") == cpf_formatado and registro.get("atividade") == atividade:
+            registro_novo = {
             "cpf": cpf_formatado,
-            "atividade": atividade.strip(),
-            "id_tablet": id_tablet.strip(),
-            "data_hora": datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-        }
-        salvar_registro(novo_registro)
-        return {"status": "success", "message": "Atividade registrada com sucesso"}
-    
-    return {"status": "error", "message": "CPF não consta na base de dados"}
+            "atividade": atividade,
+            "data_hora": datetime.datetime.now(timezone(timedelta(hours=-3))).isoformat()
+            }
+            if extra_info:
+                registro_novo.update(extra_info)
 
-def registrar_atividade_qr(cpf: str, atividade: str, id_tablet: str) -> dict:
-    cpf_formatado = formatar_cpf(cpf)
-    if not re.match(r'^\d{11}$', cpf_formatado):
-        return {"status": "error", "message": "CPF inválido - deve conter 11 dígitos"}
-    if not atividade.strip():
-        return {"status": "error", "message": "Atividade não pode estar vazia"}
-    if not id_tablet.strip():
-        return {"status": "error", "message": "ID do tablet não pode estar vazio"}
+            dados_registro.append(registro_novo)
+            salvar_dados(dados_registro, REGISTRO_JSON)
+            return {"status": "error", "message": "Atividade já registrada"}
 
-        # Verificar se já existe registro para esta atividade e CPF hoje
-    registros = carregar_registros()
-    data_hoje = datetime.datetime.now(UTC).strftime("%Y-%m-%d")
-        
-    for registro in registros:
-        if (registro.get('cpf') == cpf_formatado and 
-            registro.get('atividade') == atividade.strip() and
-            registro.get('data_hora', '').startswith(data_hoje)):
-            return {"status": "error", "message": "Atividade já registrada hoje"}
-
-        # Registrar nova atividade
-    novo_registro = {
+    registro_novo = {
         "cpf": cpf_formatado,
-        "atividade": atividade.strip(),
-        "id_tablet": id_tablet.strip(),
-        "data_hora": datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+        "atividade": atividade,
+        "data_hora": datetime.datetime.now(timezone(timedelta(hours=-3))).isoformat()
     }
-    salvar_registro(novo_registro)
+    if extra_info:
+        registro_novo.update(extra_info)
+
+    dados_registro.append(registro_novo)
+    salvar_dados(dados_registro, REGISTRO_JSON)
     return {"status": "success", "message": "Atividade registrada com sucesso"}
-    
-    return {"status": "error", "message": "CPF não consta na base de dados"}
-# ================== ROTAS API ==================
-@app.post("/cadastrar")
-async def cadastrar(usuario: CadastroModel):
-    if not re.match(r'^\d{11}$', usuario.cpf):
-        return JSONResponse(status_code=400, content={"error": "CPF inválido"})
 
-    # Validar formato da data de nascimento (DD/MM/AAAA)
-    if not re.match(r'^\d{2}/\d{2}/\d{4}$', usuario.data_nascimento):
-        return JSONResponse(status_code=400, content={"error": "Data de nascimento inválida. Use o formato DD/MM/AAAA"})
 
-    dados = carregar_dados(ARQUIVO_JSON)
-    
-    # Verificar se CPF já existe
-    if any(u['cpf'] == usuario.cpf for u in dados):
-        return JSONResponse(status_code=400, content={"error": "CPF já cadastrado"})
-
-    # Converter para dict e adicionar campos gerados no servidor
-    usuario_dict = usuario.dict()
-    usuario_dict["data_cadastro"] = datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    usuario_dict["status"] = "local"  # Adicionando status local
-    
-    dados.append(usuario_dict)
-    salvar_dados(dados, ARQUIVO_JSON)
-    
-    return {
-        "status": "success", 
-        "message": "Cadastro realizado com sucesso",
-        "dados_cadastrados": usuario_dict
-    }
-
+# ================== ROTAS ANTIGAS ==================
 @app.post("/verificar-cpf")
 async def verificar_cpf_endpoint(cpf_request: CPFRequest):
     return verificar_cpf(cpf_request.cpf, ARQUIVO_JSON)
 
-@app.post("/registrar-atividade")
+@app.post("/registrar_atividade")
 async def registrar_atividade_endpoint(atividade_request: AtividadeRequest):
-    return registrar_atividade(
-        atividade_request.cpf, 
-        atividade_request.atividade,
-        atividade_request.id_tablet
-    )
+    return registrar_atividade(atividade_request.cpf, atividade_request.atividade)
 
-@app.post("/process-qrcode")
-async def process_qrcode(qr_data: QRCodeModel):
-    qr_cpf = qr_data.qr
-    atividade = qr_data.atividade
-    id_tablet = qr_data.id_tablet
+@app.post("/process-qrcode-antigo")
+async def process_qrcode_antigo(qr_data: QRCodeModel):
     try:
-        cpf = decrypt_cpf(qr_cpf)
+        cpf = decrypt_cpf(qr_data.qr_data)
         if not re.match(r'^\d{11}$', cpf):
             return {"status": "error", "message": "CPF inválido no QR Code"}
-        # Para QR Code, usamos um ID de tablet genérico
-        return registrar_atividade_qr(cpf, atividade, id_tablet)
+        return registrar_atividade(cpf, atividade)
+    except Exception as e:
+        return {"status": "error", "message": f"Falha ao processar QRCode: {str(e)}"}
+
+
+# ================== NOVAS ROTAS ==================
+@app.post("/cadastrar")
+async def cadastrar(usuario: RegisterModel):
+    cpf_formatado = formatar_cpf(usuario.cpf)
+    if not re.match(r'^\d{11}$', cpf_formatado):
+        return JSONResponse(status_code=400, content={"error": "CPF inválido"})
+
+    dados = carregar_dados(ARQUIVO_JSON)
+    if any(u['cpf'] == cpf_formatado for u in dados):
+        return JSONResponse(status_code=400, content={"error": "CPF já cadastrado"})
+
+    registro_novo = {
+        "name": usuario.name,
+        "cpf": cpf_formatado,
+        "email": usuario.email,
+        "phone": usuario.phone,
+        "date_birthday": usuario.date_birthday,
+        "source": usuario.source,
+        "tablet_name": usuario.tablet_name,
+        "client_created_at": usuario.client_created_at or datetime.datetime.now(timezone(timedelta(hours=-3))).isoformat(),
+        "status": "local"  # adiciona automaticamente
+    }
+
+    dados.append(registro_novo)
+    salvar_dados(dados, ARQUIVO_JSON)
+    return {"status": "success", "message": "Cadastro realizado com sucesso"}
+
+
+@app.post("/process-qrcode")
+async def process_qrcode(qr_request: QRCodeRequestModel):
+    try:
+        try:
+            cpf_real = decrypt_cpf(qr_request.cpf)
+        except:
+            cpf_real = qr_request.cpf
+
+        extra_info = {
+            "method": qr_request.method,
+            "stand_name": qr_request.stand_name,
+            "tablet_name": qr_request.tablet_name,
+            "client_attempt_at": qr_request.client_attempt_at or datetime.datetime.now(timezone(timedelta(hours=-3))).isoformat(),
+            "status": "local"  # adiciona automaticamente
+        }
+        atividade = qr_request.stand_name
+        return registrar_atividade(cpf_real, atividade, extra_info)
     except Exception as e:
         return {"status": "error", "message": f"Falha ao processar QRCode: {str(e)}"}
 
